@@ -36,6 +36,7 @@ const MAX_RECEPITS_TO_REQUEST: usize = 128;
 const SUBCHAIN_SIZE: u64 = 256;
 const MAX_ROUND_PARENTS: usize = 16;
 const MAX_PARALLEL_SUBCHAIN_DOWNLOAD: usize = 5;
+const MAX_USELESS_HEADERS_PER_ROUND: usize = 3;
 
 // logging macros prepend BlockSet context for log filtering
 macro_rules! trace_sync {
@@ -137,8 +138,8 @@ pub struct BlockDownloader {
 	retract_step: u64,
 	/// Whether reorg should be limited.
 	limit_reorg: bool,
-	/// Hashes of header requests which return no useful headers
-	useless_expected_hashes: HashSet<H256>,
+	/// consecutive useless headers this round
+	useless_headers_count: usize,
 }
 
 impl BlockDownloader {
@@ -164,14 +165,14 @@ impl BlockDownloader {
 			target_hash: None,
 			retract_step: 1,
 			limit_reorg: limit_reorg,
-			useless_expected_hashes: HashSet::new(),
+			useless_headers_count: 0,
 		}
 	}
 
 	/// Reset sync. Clear all local downloaded data.
 	pub fn reset(&mut self) {
 		self.blocks.clear();
-		self.useless_expected_hashes.clear();
+		self.useless_headers_count = 0;
 		self.state = State::Idle;
 	}
 
@@ -316,17 +317,15 @@ impl BlockDownloader {
 				if count == 0 || !any_known {
 					trace_sync!(self, "No useful headers, expected hash {:?}", expected_hash);
 					if let Some(eh) = expected_hash {
+						self.useless_headers_count += 1;
 						// only reset download if we have multiple subchain heads, to avoid unnecessary resets
 						// when we are at the head of the chain when we may legitimately receive no useful headers
-						if self.blocks.heads_len() > 1 && !self.useless_expected_hashes.insert(eh) {
+						if self.blocks.heads_len() > 1 && self.useless_headers_count >= MAX_USELESS_HEADERS_PER_ROUND {
 							trace_sync!(self, "Received consecutive sets of useless headers from requested header {:?}. Resetting sync", eh);
 							self.reset();
 						}
 					}
 					return Err(BlockDownloaderImportError::Useless);
-				}
-				if let Some(eh) = expected_hash {
-					self.useless_expected_hashes.remove(&eh);
 				}
 				self.blocks.insert_headers(headers);
 				trace_sync!(self, "Inserted {} headers", count);
